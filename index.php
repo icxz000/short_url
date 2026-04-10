@@ -6,10 +6,10 @@
 // ============================================
 // 数据库配置
 // ============================================
-define('DB_HOST',    'sql211.infinityfree.com');
-define('DB_USER',    'if0_41624958');
-define('DB_PASS',    'Bln4t3VqXo');
-define('DB_NAME',    'if0_41624958_if0_41624958_89icxz');
+define('DB_HOST',    'xxxxxx');
+define('DB_USER',    'xxxxxx');
+define('DB_PASS',    'xxxxxx');
+define('DB_NAME',    'xxxxxx');
 define('DB_PORT',    3306);
 define('ADMIN_PATH', 'panel');
 define('ADMIN_USER', 'admin');
