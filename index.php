@@ -6,10 +6,10 @@
 // ============================================
 // 数据库配置
 // ============================================
-define('DB_HOST',    'xxxxxx');
-define('DB_USER',    'xxxxxx');
-define('DB_PASS',    'xxxxxx');
-define('DB_NAME',    'xxxxxx');
+define('DB_HOST',    'xxxx');
+define('DB_USER',    'xxxx');
+define('DB_PASS',    'xxxx');
+define('DB_NAME',    'xxxx');
 define('DB_PORT',    3306);
 define('ADMIN_PATH', 'panel');
 define('ADMIN_USER', 'admin');
@@ -74,7 +74,19 @@ function generateUniqueCode($len = 6) {
     return $code;
 }
 function isValidUrl($url) {
-    return filter_var($url, FILTER_VALIDATE_URL) !== false && preg_match('/^https?:\/\//i', $url);
+    // 必须以 http:// 或 https:// 开头
+    if (!preg_match('/^https?:\/\//i', $url)) return false;
+    // filter_var 基础校验
+    if (filter_var($url, FILTER_VALIDATE_URL) === false) return false;
+    // 提取 host 部分
+    $parts = parse_url($url);
+    $host = $parts['host'] ?? '';
+    if (!$host) return false;
+    // 禁止纯数字、纯字母、含中文等非合法域名字符
+    if (preg_match('/[\x{4e00}-\x{9fff}]/u', $host)) return false;
+    // 域名必须含至少一个点（即有 TLD），且由合法字符组成
+    if (!preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/', $host)) return false;
+    return true;
 }
 function jsonResponse($data, $code = 200) {
     http_response_code($code);
@@ -104,7 +116,7 @@ if ($action === 'shorten' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $title = trim($input['title'] ?? '');
 
     if (!$url) jsonResponse(['error' => '请输入URL'], 400);
-    if (!isValidUrl($url)) jsonResponse(['error' => 'URL格式不正确'], 400);
+    if (!isValidUrl($url)) jsonResponse(['error' => 'URL格式不正确，请输入以 http:// 或 https:// 开头且包含有效域名的网址（如 https://example.com）'], 400);
     if (strlen($url) > 2048) jsonResponse(['error' => 'URL过长'], 400);
 
     $db = getDB();
@@ -255,10 +267,57 @@ if ($uri === '/' . ADMIN_PATH) {
 
     .empty{text-align:center;color:#3f3f46;padding:60px 20px;font-size:14px}
 
+    /* ============ 移动端管理面板 ============ */
     @media(max-width:600px){
-        .admin-stats{grid-template-columns:1fr}
-        .link-table .url{max-width:140px}
+        @supports(padding: env(safe-area-inset-bottom)){
+            .admin-wrap{padding-bottom:calc(20px + env(safe-area-inset-bottom))}
+        }
+        .admin-wrap{padding:20px 12px}
         .admin-header{flex-direction:column;gap:12px;align-items:flex-start}
+        .admin-header h1{font-size:18px}
+        .admin-header div{width:100%;justify-content:space-between}
+        .admin-stats{grid-template-columns:1fr;gap:8px}
+        .a-stat{padding:14px;border-radius:12px}
+        .a-stat .v{font-size:22px}
+        /* 表格改为卡片布局 */
+        .link-table,.link-table thead,.link-table tbody,.link-table tr,.link-table td,.link-table th{display:block}
+        .link-table thead{display:none}
+        .link-table tr{
+            background:rgba(255,255,255,.02);
+            border:1px solid rgba(255,255,255,.05);
+            border-radius:12px;
+            margin-bottom:10px;
+            padding:12px;
+        }
+        .link-table td{
+            padding:6px 0;border:none;
+            display:flex;align-items:center;justify-content:space-between;
+        }
+        .link-table td::before{
+            content:attr(data-label);
+            font-size:11px;font-weight:600;color:#52525b;
+            text-transform:uppercase;letter-spacing:.5px;flex-shrink:0;margin-right:12px;
+        }
+        .link-table .code{font-size:15px}
+        .link-table .url{
+            max-width:none;white-space:normal;word-break:break-all;font-size:12px;
+            text-align:right;flex:1;justify-content:flex-end;
+        }
+        .link-table .clicks{justify-content:flex-end}
+        .link-table .time{font-size:11px}
+        .link-table .del-btn{padding:8px 14px;font-size:12px}
+        /* 分页 */
+        .admin-actions{flex-wrap:wrap}
+        .admin-actions a{flex:1;justify-content:center;min-height:44px;font-size:12px}
+        .login-card{margin:40px 16px;padding:28px;border-radius:16px}
+        .login-card h2{font-size:18px}
+        .login-card input{padding:14px;font-size:15px;border-radius:10px}
+        .login-card button{padding:14px;font-size:15px;min-height:48px;border-radius:10px}
+    }
+    @media(max-width:360px){
+        .admin-wrap{padding:12px 8px}
+        .admin-header h1{font-size:16px}
+        .a-stat .v{font-size:20px}
     }
     </style>
     </head>
@@ -324,10 +383,10 @@ if ($uri === '/' . ADMIN_PATH) {
                 <tbody>
                 <?php foreach ($rows as $r): ?>
                     <tr>
-                        <td class="code"><?= htmlspecialchars($r['code']) ?></td>
-                        <td class="url" title="<?= htmlspecialchars($r['url']) ?>"><?= htmlspecialchars($r['url']) ?></td>
-                        <td class="clicks"><?= (int)$r['clicks'] ?></td>
-                        <td class="time"><?= htmlspecialchars($r['created_at']) ?></td>
+                        <td class="code" data-label="短码"><?= htmlspecialchars($r['code']) ?></td>
+                        <td class="url" data-label="链接" title="<?= htmlspecialchars($r['url']) ?>"><?= htmlspecialchars($r['url']) ?></td>
+                        <td class="clicks" data-label="点击"><?= (int)$r['clicks'] ?></td>
+                        <td class="time" data-label="时间"><?= htmlspecialchars($r['created_at']) ?></td>
                         <td>
                             <form method="POST" action="/<?= ADMIN_PATH ?>?action=delete" style="display:inline" onsubmit="return confirm('删除此链接？')">
                                 <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
@@ -385,7 +444,7 @@ $bgImage = ($bingApi && !empty($bingApi['url'])) ? $bingApi['url'] : 'https://im
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <title>短链接</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -593,17 +652,69 @@ body{
 .footer a{color:rgba(255,255,255,.25);text-decoration:none}
 .footer a:hover{color:rgba(255,255,255,.4)}
 
-/* ============ Responsive ============ */
+/* ============ Responsive: 首页 ============ */
 @media(max-width:480px){
+  /* 安全区域适配 (刘海屏/底部横条) */
+  @supports(padding: env(safe-area-inset-bottom)){
+    .container{padding-left:calc(16px + env(safe-area-inset-left));padding-right:calc(16px + env(safe-area-inset-right));padding-bottom:calc(40px + env(safe-area-inset-bottom))}
+    .toast{bottom:calc(32px + env(safe-area-inset-bottom))}
+  }
   .container{padding:60px 16px 40px}
+  .brand{margin-bottom:36px}
   .brand h1{font-size:28px}
+  .brand p{font-size:13px}
   .brand-icon{width:50px;height:50px;border-radius:14px}
   .brand-icon svg{width:24px;height:24px}
+  /* 输入卡片纵向排列 */
   .input-card{flex-direction:column;padding:0;border-radius:16px}
-  #urlInput{padding:16px;border-bottom:1px solid rgba(255,255,255,.06);width:100%}
-  #shortenBtn{border-radius:0 0 16px 16px;width:100%;padding:16px}
-  .result-url{flex-direction:column;align-items:flex-start;gap:10px}
-  .copy-btn{width:100%;justify-content:center}
+  #urlInput{padding:16px;border-bottom:1px solid rgba(255,255,255,.06);width:100%;font-size:16px;/* 防止iOS缩放 */}
+  #shortenBtn{border-radius:0 0 16px 16px;width:100%;padding:16px;font-size:15px;min-height:48px;/* 触摸友好 */}
+  /* 结果卡片 */
+  .result{padding:20px 16px}
+  .result-url{flex-direction:column;align-items:stretch;gap:10px}
+  .result-url a{font-size:15px}
+  .copy-btn{width:100%;justify-content:center;padding:14px;min-height:48px;font-size:14px}
+  .result-original{-webkit-line-clamp:3;font-size:12px}
+  /* 错误提示 */
+  .error-msg{font-size:13px;padding:10px 14px;border-radius:12px}
+  /* Toast */
+  .toast{padding:10px 20px;font-size:13px;border-radius:12px;bottom:24px}
+  .footer{margin-top:40px;font-size:11px}
+}
+
+/* 极小屏适配 (SE等) */
+@media(max-width:360px){
+  .container{padding:48px 12px 32px}
+  .brand h1{font-size:24px}
+  .brand-icon{width:44px;height:44px;border-radius:12px;margin-bottom:16px}
+  .brand-icon svg{width:20px;height:20px}
+  #urlInput{padding:14px 12px;font-size:14px}
+  .result-url a{font-size:14px}
+}
+
+/* 横屏小高度 */
+@media(max-height:500px) and (orientation:landscape){
+  .container{padding:24px 20px 20px}
+  .brand{margin-bottom:20px}
+  .brand h1{font-size:22px}
+  .brand p{display:none}
+  .brand-icon{width:36px;height:36px;border-radius:10px;margin-bottom:10px}
+  .brand-icon svg{width:18px;height:18px}
+  .footer{margin-top:20px}
+}
+
+/* iPad / 平板 */
+@media(min-width:481px) and (max-width:768px){
+  .container{padding:80px 24px 48px}
+  .brand h1{font-size:32px}
+}
+
+/* 触摸设备去掉hover效果，增大点击区域 */
+@media(hover:none) and (pointer:coarse){
+  .brand-icon:active{transform:scale(1.05)}
+  #shortenBtn:active{transform:scale(.97);opacity:.85}
+  .copy-btn:active{transform:scale(.97)}
+  .copy-btn{min-height:48px}
 }
 </style>
 </head>
@@ -624,7 +735,7 @@ body{
   </div>
 
   <div class="input-card">
-    <input type="url" id="urlInput" placeholder="https://example.com/very-long-url..." autofocus autocomplete="off" spellcheck="false">
+    <input type="text" id="urlInput" placeholder="https://example.com/very-long-url..." autofocus autocomplete="off" spellcheck="false">
     <button id="shortenBtn" onclick="shortenUrl()">缩短</button>
   </div>
 
@@ -669,8 +780,10 @@ async function shortenUrl(){
   const url=inp.value.trim();
   err.classList.remove('show');res.classList.remove('show');
   if(!url){err.textContent='请输入一个链接';err.classList.add('show');inp.focus();return}
+  if(!/^https?:\/\/.+/i.test(url)){err.textContent='请输入以 http:// 或 https:// 开头的完整网址';err.classList.add('show');inp.focus();return}
+  const hostMatch=url.match(/^https?:\/\/([^\/]+)/i);
+  if(!hostMatch||!/^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/.test(hostMatch[1])){err.textContent='请输入包含有效域名的网址（如 https://example.com）';err.classList.add('show');inp.focus();return}
   let final=url;
-  if(!/^https?:\/\//i.test(final))final='https://'+final;
   btn.disabled=true;btn.innerHTML='<span class="spinner"></span>';
   try{
     const r=await fetch('?action=shorten',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:final})});
