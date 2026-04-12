@@ -6,14 +6,14 @@
 // ============================================
 // 数据库配置
 // ============================================
-define('DB_HOST',    'xxxx');
-define('DB_USER',    'xxxx');
-define('DB_PASS',    'xxxx');
-define('DB_NAME',    'xxxx');
+define('DB_HOST',    'XXXXXX');
+define('DB_USER',    'XXXXXX');
+define('DB_PASS',    'XXXXXX');
+define('DB_NAME',    'XXXXXX');
 define('DB_PORT',    3306);
 define('ADMIN_PATH', 'panel');
 define('ADMIN_USER', 'admin');
-define('ADMIN_PASS', 'admin123');
+define('ADMIN_PASS', 'admin123123');
 
 // ============================================
 // 数据库
@@ -459,25 +459,29 @@ body{
   position:relative;
 }
 
-/* ============ Bing 壁纸背景 ============ */
-.bg-wallpaper{
+/* ============ 虚化壁纸背景 ============ */
+#blurBg{
   position:fixed;inset:0;z-index:0;
   background:url('<?= htmlspecialchars($bgImage) ?>') center/cover no-repeat fixed;
+  filter:blur(30px) brightness(0.5);
+  transform:scale(1.1); /* 防止模糊边缘露白 */
 }
-.bg-wallpaper::after{
+#blurBg::after{
   content:'';position:absolute;inset:0;
-  background:linear-gradient(
-    180deg,
-    rgba(9,9,11,.7) 0%,
-    rgba(9,9,11,.5) 40%,
-    rgba(9,9,11,.65) 70%,
-    rgba(9,9,11,.85) 100%
-  );
+  background:rgba(5,5,12,0.4);
+}
+
+/* ============ 粒子 Canvas ============ */
+#particleCanvas{
+  position:fixed;inset:0;z-index:1;
+  display:block;
+  background:transparent;
+  cursor:none;
 }
 
 /* ============ Layout ============ */
 .container{
-  position:relative;z-index:1;
+  position:relative;z-index:2;
   width:100%;max-width:560px;
   margin:0 auto;
   padding:100px 20px 60px;
@@ -720,7 +724,8 @@ body{
 </head>
 <body>
 
-<div class="bg-wallpaper"></div>
+<canvas id="particleCanvas"></canvas>
+<div id="blurBg"></div>
 
 <div class="container">
   <div class="brand">
@@ -754,7 +759,7 @@ body{
   </div>
 
   <div class="footer">
-    Powered by ShortURL · 每日壁纸来自 <a href="https://www.bing.com" target="_blank">Bing</a>
+    Powered by ShortURL · 每日壁纸来自 <a href="https://www.bing.com" target="_blank">Bing</a> · <a href="https://github.com/icxz000/short_url" target="_blank">GitHub</a>
   </div>
 </div>
 
@@ -764,6 +769,422 @@ body{
 </div>
 
 <script>
+// ═══════════════════════════════════════════
+//  粒子系统 - Apple 风格粒子
+// ═══════════════════════════════════════════
+const canvas = document.getElementById('particleCanvas');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+// 离屏 canvas：预渲染亮度层（暗背景 + 微光叠加）
+const glowCanvas = document.createElement('canvas');
+const glowCtx = glowCanvas.getContext('2d', { willReadFrequently: true });
+
+let W, H, dpr;
+let particles = [];
+let sparkles = [];
+let mouse = { x: -9999, y: -9999 };
+let mouseMoving = false;
+let mouseTimer = null;
+let imageLoaded = false;
+let time = 0;
+let globalAlpha = 0;
+let entryProgress = 0;
+
+// 光标拖尾
+let cursorTrail = [];
+const TRAIL_MAX = 25;
+// 闪电
+let lightnings = [];
+
+const GAP = 7;
+const SPRING = 0.065;   // 弹簧刚度（越大越快归位）
+const DAMPING = 0.82;   // 阻尼（越小越快停）
+const MOUSE_FORCE = 0.12;
+let influenceRadius = 200;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  glowCanvas.width = W * dpr;
+  glowCanvas.height = H * dpr;
+  glowCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+window.addEventListener('resize', () => {
+  resize();
+  if (lastImg) generateParticles(lastImg);
+});
+
+// ── 鼠标事件 ──
+canvas.addEventListener('mousemove', (e) => {
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  mouseMoving = true;
+  clearTimeout(mouseTimer);
+  mouseTimer = setTimeout(() => { mouseMoving = false; }, 200);
+  // 记录拖尾
+  cursorTrail.push({ x: e.clientX, y: e.clientY, age: 0 });
+  if (cursorTrail.length > TRAIL_MAX) cursorTrail.shift();
+});
+canvas.addEventListener('mouseleave', () => { mouseMoving = false; mouse.x = -9999; mouse.y = -9999; cursorTrail = []; });
+canvas.addEventListener('click', (e) => {
+  explode(e.clientX, e.clientY);
+  spawnLightning(e.clientX, e.clientY);
+});
+canvas.addEventListener('wheel', (e) => {
+  influenceRadius = Math.max(80, Math.min(500, influenceRadius - e.deltaY * 0.3));
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  const t = e.touches[0];
+  mouse.x = t.clientX; mouse.y = t.clientY;
+  mouseMoving = true;
+  clearTimeout(mouseTimer);
+  mouseTimer = setTimeout(() => mouseMoving = false, 200);
+}, { passive: false });
+canvas.addEventListener('touchend', () => { mouseMoving = false; });
+
+// ── 爆炸 ──
+function explode(x, y) {
+  const colors = [[255,200,80],[255,120,180],[120,200,255],[200,160,255],[255,255,200]];
+  for (let i = 0; i < 80; i++) {
+    const angle = (i / 80) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+    const speed = 2 + Math.random() * 8;
+    const c = colors[Math.random() * colors.length | 0];
+    sparkles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1, decay: 0.012 + Math.random() * 0.018,
+      r: c[0], g: c[1], b: c[2],
+      size: 1 + Math.random() * 3,
+    });
+  }
+  // 冲击波
+  const rSq = 250 * 250;
+  for (const p of particles) {
+    const dx = p.x - x, dy = p.y - y;
+    const dsq = dx * dx + dy * dy;
+    if (dsq < rSq && dsq > 1) {
+      const dist = Math.sqrt(dsq);
+      const force = (1 - dist / 250) * 10;
+      p.vx += (dx / dist) * force;
+      p.vy += (dy / dist) * force;
+    }
+  }
+}
+
+// ── 闪电效果 ──
+function spawnLightning(x, y) {
+  const branches = 5 + Math.random() * 5 | 0;
+  for (let b = 0; b < branches; b++) {
+    const angle = (b / branches) * Math.PI * 2 + (Math.random() - 0.5) * 0.8;
+    const len = 60 + Math.random() * 120;
+    const segments = 6 + Math.random() * 6 | 0;
+    const points = [{ x, y }];
+    let cx = x, cy = y;
+    for (let i = 1; i <= segments; i++) {
+      const t = i / segments;
+      const segLen = len / segments;
+      const jitter = (1 - t) * 25; // 越远越抖
+      cx += Math.cos(angle + (Math.random() - 0.5) * 1.2) * segLen;
+      cy += Math.sin(angle + (Math.random() - 0.5) * 1.2) * segLen;
+      points.push({ x: cx + (Math.random() - 0.5) * jitter, y: cy + (Math.random() - 0.5) * jitter });
+    }
+    lightnings.push({ points, life: 1, decay: 0.04 + Math.random() * 0.03, width: 1.5 + Math.random() * 2 });
+  }
+}
+
+// ── 加载壁纸 ──
+let lastImg = null;
+
+function loadBingImage() {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => generateParticles(img);
+  img.onerror = () => generateDefaultImage();
+  img.src = '<?= htmlspecialchars($bgImage) ?>';
+}
+
+function generateDefaultImage() {
+  const size = 400;
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  const o = c.getContext('2d');
+  const g1 = o.createRadialGradient(size/2, size/2, 20, size/2, size/2, size * 0.7);
+  g1.addColorStop(0, '#2d1b69');
+  g1.addColorStop(0.5, '#111');
+  g1.addColorStop(1, '#05050a');
+  o.fillStyle = g1;
+  o.fillRect(0, 0, size, size);
+  const colors = ['#ff6b6b','#feca57','#48dbfb','#ff9ff3','#54a0ff','#5f27cd','#01a3a4'];
+  for (let i = 0; i < 360; i++) {
+    const angle = (i * Math.PI) / 180;
+    o.beginPath();
+    o.arc(size/2 + Math.cos(angle) * 120, size/2 + Math.sin(angle) * 120, 6, 0, Math.PI * 2);
+    o.fillStyle = colors[Math.floor(i / 51.4) % colors.length];
+    o.globalAlpha = 0.9; o.fill();
+  }
+  const img = new Image();
+  img.onload = () => generateParticles(img);
+  img.src = c.toDataURL();
+}
+
+function generateParticles(img) {
+  lastImg = img;
+  const off = document.createElement('canvas');
+  const octx = off.getContext('2d', { willReadFrequently: true });
+  const scale = Math.max(W / img.width, H / img.height);
+  const iw = Math.floor(img.width * scale);
+  const ih = Math.floor(img.height * scale);
+  off.width = iw; off.height = ih;
+  octx.drawImage(img, 0, 0, iw, ih);
+
+  const data = octx.getImageData(0, 0, iw, ih).data;
+  particles = [];
+
+  const ox = (W - iw) / 2;
+  const oy = (H - ih) / 2;
+  const centerX = W / 2;
+  const centerY = H / 2;
+  let idx = 0;
+
+  for (let y = 0; y < ih; y += GAP) {
+    for (let x = 0; x < iw; x += GAP) {
+      const i = (y * iw + x) * 4;
+      const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
+      if (a < 30) continue;
+
+      const tx = ox + x, ty = oy + y;
+      // 亮度决定粒子大小
+      const brightness = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+      const size = GAP * 0.32 + brightness * GAP * 0.28;
+
+      // 入场：从中心漩涡状散开
+      const angle = Math.atan2(ty - centerY, tx - centerX);
+      const distFromCenter = Math.sqrt((tx - centerX) ** 2 + (ty - centerY) ** 2);
+      const delay = distFromCenter * 0.8 + Math.random() * 40; // 外圈晚到
+
+      particles.push({
+        originX: tx, originY: ty,
+        x: centerX, y: centerY, // 起始都在中心
+        vx: 0, vy: 0,
+        r, g, b, a,
+        size,
+        phase: Math.random() * Math.PI * 2,
+        delay,         // 入场延迟(ms)
+        angle,         // 相对中心的角度
+        landed: false,
+        birth: 0,      // 将在 animate 第一帧设置
+      });
+      idx++;
+    }
+  }
+
+  // 记录生成时间，用于入场动画
+  const now = performance.now();
+  for (const p of particles) p.birth = now;
+
+  imageLoaded = true;
+  entryProgress = 0;
+  globalAlpha = 0;
+}
+
+// ── 主循环 ──
+function animate() {
+  const dt = 0.016;
+  time += dt;
+
+  // 入场渐显
+  if (imageLoaded && globalAlpha < 1) {
+    globalAlpha = Math.min(1, globalAlpha + dt * 0.8);
+  }
+
+  // 透明清画布（底层是虚化壁纸）
+  ctx.clearRect(0, 0, W, H);
+
+  if (imageLoaded) {
+    const mx = mouse.x, my = mouse.y;
+    const moving = mouseMoving;
+    const now = performance.now();
+    const rSq = influenceRadius * influenceRadius;
+    const invR = 1 / influenceRadius;
+    const breath = Math.sin(time * 1.2) * 0.5 + 0.5;
+
+    // === 光辉层 ===
+    if (time % 0.05 < 0.017) {
+      glowCtx.clearRect(0, 0, W, H);
+      const glowStep = 10;
+      for (let i = 0; i < particles.length; i += glowStep) {
+        const p = particles[i];
+        if (!p.landed) continue;
+        const gs = p.size * 3.5;
+        glowCtx.fillStyle = `rgba(${p.r},${p.g},${p.b},0.04)`;
+        glowCtx.fillRect(p.x - gs, p.y - gs, gs * 2, gs * 2);
+      }
+    }
+    ctx.globalAlpha = 0.4 + breath * 0.25;
+    ctx.drawImage(glowCanvas, 0, 0, W, H);
+    ctx.globalAlpha = 1;
+
+    // === 主粒子 ===
+    for (let i = 0, len = particles.length; i < len; i++) {
+      const p = particles[i];
+
+      const elapsed = now - p.birth;
+      if (elapsed < p.delay) {
+        const t = elapsed / p.delay;
+        ctx.fillStyle = `rgba(${p.r},${p.g},${p.b},${t * 0.3 * globalAlpha})`;
+        const s = p.size * 0.5;
+        ctx.fillRect(p.x - s/2, p.y - s/2, s, s);
+        continue;
+      }
+
+      if (moving) {
+        const dx = mx - p.x, dy = my - p.y;
+        const dsq = dx * dx + dy * dy;
+        if (dsq < rSq && dsq > 1) {
+          const dist = Math.sqrt(dsq);
+          const falloff = 1 - dist * invR;
+          const force = MOUSE_FORCE * falloff * falloff;
+          p.vx += dx / dist * force * influenceRadius * 0.5;
+          p.vy += dy / dist * force * influenceRadius * 0.5;
+        }
+        p.landed = false;
+      } else {
+        const dx = p.originX - p.x;
+        const dy = p.originY - p.y;
+        p.vx += dx * SPRING;
+        p.vy += dy * SPRING;
+
+        if (dx * dx + dy * dy < 0.25) {
+          p.x = p.originX;
+          p.y = p.originY;
+          p.vx *= 0.3;
+          p.vy *= 0.3;
+          p.landed = true;
+        } else {
+          p.landed = false;
+        }
+      }
+
+      p.vx *= DAMPING;
+      p.vy *= DAMPING;
+      p.x += p.vx;
+      p.y += p.vy;
+
+      // 亮度 + 呼吸
+      const pulse = Math.sin(time * 2 + p.phase) * 0.5 + 0.5;
+      let alpha = (p.a / 255) * globalAlpha;
+      if (p.landed) {
+        alpha *= 0.9 + pulse * 0.1 + breath * 0.05;
+      } else {
+        alpha *= 0.95;
+      }
+
+      const bright = (p.r * 0.299 + p.g * 0.587 + p.b * 0.114) / 255;
+      const boost = 1 + bright * 0.25;
+      const cr = Math.min(255, p.r * boost) | 0;
+      const cg = Math.min(255, p.g * boost) | 0;
+      const cb = Math.min(255, p.b * boost) | 0;
+
+      const s = p.size;
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},${alpha})`;
+      ctx.fillRect(p.x - s * 0.5, p.y - s * 0.5, s, s);
+    }
+  }
+
+  // 爆炸微粒
+  for (let i = sparkles.length - 1; i >= 0; i--) {
+    const s = sparkles[i];
+    s.x += s.vx; s.y += s.vy;
+    s.vx *= 0.95; s.vy *= 0.95;
+    s.vy += 0.04;
+    s.life -= s.decay;
+    if (s.life <= 0) { sparkles.splice(i, 1); continue; }
+    const a = s.life * s.life;
+    ctx.fillStyle = `rgba(${s.r},${s.g},${s.b},${a})`;
+    const sz = s.size * s.life;
+    ctx.fillRect(s.x - sz, s.y - sz, sz * 2, sz * 2);
+  }
+
+  // ── 光标拖尾 ──
+  for (let i = cursorTrail.length - 1; i >= 0; i--) {
+    const pt = cursorTrail[i];
+    pt.age += dt;
+    if (pt.age > 0.5) { cursorTrail.splice(i, 1); continue; }
+    const life = 1 - pt.age / 0.5;
+    const sz = 2 + life * 3;
+    // 光晕核心
+    ctx.fillStyle = `rgba(180,220,255,${life * 0.6})`;
+    ctx.fillRect(pt.x - sz/2, pt.y - sz/2, sz, sz);
+    // 外发光
+    const gsz = sz * 3;
+    ctx.fillStyle = `rgba(120,180,255,${life * 0.08})`;
+    ctx.fillRect(pt.x - gsz/2, pt.y - gsz/2, gsz, gsz);
+  }
+  // 光标当前位置
+  if (mouse.x > 0) {
+    // 核心光点
+    ctx.fillStyle = 'rgba(220,240,255,0.9)';
+    const cs = 3;
+    ctx.fillRect(mouse.x - cs/2, mouse.y - cs/2, cs, cs);
+    // 光环
+    const ringR = 14 + Math.sin(time * 3) * 2;
+    ctx.strokeStyle = `rgba(140,200,255,${0.25 + Math.sin(time * 4) * 0.1})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, ringR, 0, Math.PI * 2);
+    ctx.stroke();
+    // 外圈微粒随机闪烁
+    if (Math.random() < 0.3) {
+      const sa = Math.random() * Math.PI * 2;
+      const sr = ringR + Math.random() * 6;
+      ctx.fillStyle = `rgba(180,220,255,${0.3 + Math.random() * 0.4})`;
+      ctx.fillRect(mouse.x + Math.cos(sa) * sr - 1, mouse.y + Math.sin(sa) * sr - 1, 2, 2);
+    }
+  }
+
+  // ── 闪电 ──
+  for (let i = lightnings.length - 1; i >= 0; i--) {
+    const ln = lightnings[i];
+    ln.life -= ln.decay;
+    if (ln.life <= 0) { lightnings.splice(i, 1); continue; }
+    const a = ln.life;
+    const pts = ln.points;
+    // 主闪电
+    ctx.strokeStyle = `rgba(200,230,255,${a})`;
+    ctx.lineWidth = ln.width * a;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let j = 1; j < pts.length; j++) ctx.lineTo(pts[j].x, pts[j].y);
+    ctx.stroke();
+    // 外发光（粗、低透明度）
+    ctx.strokeStyle = `rgba(100,170,255,${a * 0.3})`;
+    ctx.lineWidth = ln.width * a * 4;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let j = 1; j < pts.length; j++) ctx.lineTo(pts[j].x, pts[j].y);
+    ctx.stroke();
+  }
+
+  requestAnimationFrame(animate);
+}
+
+// 启动
+loadBingImage();
+animate();
+
+// ═══════════════════════════════════════════
+//  短链接功能
+// ═══════════════════════════════════════════
 let toastTimer;
 function showToast(msg){
   const t=document.getElementById('toast');
